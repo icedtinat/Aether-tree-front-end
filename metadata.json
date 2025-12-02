@@ -1,0 +1,5 @@
+{
+  "name": "Aether tree front end",
+  "description": "A generative, WebGL-based particle Christmas tree that grows organically using React Three Fiber and GLSL shaders.",
+  "requestFramePermissions": []
+}

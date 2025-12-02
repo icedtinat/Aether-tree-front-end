@@ -1,0 +1,5 @@
+{
+  "name": "Luminous Particle Sphere",
+  "description": "A high-performance WebGL 3D interactive sphere composed of thousands of individual particles with gradient coloring and organic movement.",
+  "requestFramePermissions": []
+}
