@@ -1,318 +1,223 @@
-import React, { useMemo, useRef } from 'react';
-import { useFrame, extend } from '@react-three/fiber';
+import React, { useRef, useState, useMemo } from 'react';
+import { useFrame, useLoader } from '@react-three/fiber';
+import { Html } from '@react-three/drei';
 import { useSpring, animated } from '@react-spring/three';
 import * as THREE from 'three';
-import { shaderMaterial } from '@react-three/drei';
-import { useWishStore } from '../store';
-
-// --------------------------------------------------------
-// 1. HELPER FUNCTIONS (Texture Atlas Generation)
-// --------------------------------------------------------
-
-const getUniqueWords = (text: string) => {
-  const cleanText = text.replace(/[.,;，,。 \n\t]/g, ' ');
-  const words = cleanText.split(' ').filter(w => w.length > 0);
-  return [...new Set(words)];
-};
-
-const createWordTextureAtlas = (words: string[]) => {
-  if (typeof document === 'undefined') return { texture: new THREE.Texture(), cols: 1, rows: 1 };
-  
-  if (words.length === 0) return { texture: new THREE.Texture(), cols: 1, rows: 1 };
-
-  const count = words.length;
-  const cols = Math.ceil(Math.sqrt(count));
-  const rows = Math.ceil(count / cols);
-  
-  const canvas = document.createElement('canvas');
-  const size = 1024; 
-  canvas.width = size;
-  canvas.height = size;
-  
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return { texture: new THREE.Texture(), cols: 1, rows: 1 };
-
-  ctx.clearRect(0, 0, size, size);
-  
-  const cellWidth = size / cols;
-  const cellHeight = size / rows;
-  
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#ffffff';
-  
-  words.forEach((word, i) => {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    
-    const centerX = col * cellWidth + cellWidth / 2;
-    const centerY = row * cellHeight + cellHeight / 2;
-    
-    let fontSize = cellHeight * 0.6; 
-    ctx.font = `bold ${fontSize}px "Microsoft YaHei", "Arial", sans-serif`;
-    
-    const metrics = ctx.measureText(word);
-    const textWidth = metrics.width;
-    const maxWidth = cellWidth * 0.9;
-    
-    if (textWidth > maxWidth) {
-      fontSize = fontSize * (maxWidth / textWidth);
-      ctx.font = `bold ${fontSize}px "Microsoft YaHei", "Arial", sans-serif`;
-    }
-    
-    ctx.fillText(word, centerX, centerY);
-  });
-  
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.needsUpdate = true;
-  
-  return { texture, cols, rows };
-};
-
-// --------------------------------------------------------
-// 2. CUSTOM SHADER MATERIAL
-// --------------------------------------------------------
-
-const ParticleShaderMaterial = shaderMaterial(
-  {
-    uTime: 0,
-    uColorTop: new THREE.Color('#FFD700'), // Fixed: Gold/Yellow
-    uColorBottom: new THREE.Color('#FFFFFF'), // Fixed: White
-    uPixelRatio: typeof window !== 'undefined' ? window.devicePixelRatio : 2.0,
-    uSize: 80.0,
-    uTexture: null,
-    uAtlasGrid: new THREE.Vector2(1, 1),
-    uFocus: 0.0, // New uniform: 0.0 (unfocused) -> 1.0 (focused)
-  },
-  // Vertex Shader
-  `
-    uniform float uTime;
-    uniform float uPixelRatio;
-    uniform float uSize;
-    uniform float uFocus; // Controls density
-    
-    attribute float aScale;
-    attribute vec3 aColor;
-    attribute vec3 aRandom;
-    attribute float aWordIndex;
-    
-    varying vec3 vColor;
-    varying float vWordIndex;
-    varying float vScale;
-    
-    void main() {
-      vColor = aColor;
-      vWordIndex = aWordIndex;
-      vScale = aScale;
-
-      // CULLING LOGIC:
-      // If uFocus is high (zoomed in), we want LESS density.
-      // So if uFocus -> 1.0, we want to hide more particles.
-      // Let's hide 70% of particles when focused.
-      // aRandom.x is 0..1.
-      // mix(1.0, 0.3, uFocus) means:
-      // unfocused (0.0): threshold = 1.0 (allow all)
-      // focused (1.0): threshold = 0.3 (allow only 30%)
-      
-      float densityThreshold = mix(1.0, 0.3, uFocus);
-      if (aRandom.x > densityThreshold) {
-        vScale = 0.0; // Hide particle
-      }
-      
-      vec3 pos = position;
-      
-      // ORGANIC MOVEMENT
-      float time = uTime * 0.5;
-      
-      // Wiggling
-      pos.x += sin(time + pos.y * 2.0 + aRandom.x) * 0.1;
-      pos.y += cos(time + pos.x * 2.0 + aRandom.y) * 0.1;
-      pos.z += sin(time + pos.z * 2.0 + aRandom.z) * 0.1;
-      
-      // Breathing
-      float breath = sin(time * 0.5) * 0.1;
-      pos += normal * breath;
-
-      vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-      gl_Position = projectionMatrix * mvPosition;
-      
-      // Apply vScale which might be 0
-      gl_PointSize = uSize * aScale * vScale * uPixelRatio * (1.0 / -mvPosition.z);
-    }
-  `,
-  // Fragment Shader
-  `
-    uniform sampler2D uTexture;
-    uniform vec2 uAtlasGrid;
-    uniform vec3 uColorTop;
-    uniform vec3 uColorBottom;
-    
-    varying vec3 vColor;
-    varying float vWordIndex;
-    varying float vScale; // passed from vertex to ensure 0-scale pixels are discarded
-    
-    void main() {
-      if (vScale <= 0.01) discard;
-
-      vec2 uv = gl_PointCoord;
-      uv.y = 1.0 - uv.y; 
-      
-      float cols = uAtlasGrid.x;
-      float rows = uAtlasGrid.y;
-      
-      float index = floor(vWordIndex + 0.5);
-      float colIndex = mod(index, cols);
-      float rowIndex = floor(index / cols);
-      
-      vec2 atlasUV = vec2(
-        (colIndex + uv.x) / cols,
-        1.0 - (rowIndex + 1.0 - uv.y) / rows
-      );
-      
-      vec4 texColor = texture2D(uTexture, atlasUV);
-      
-      if (texColor.a < 0.3) discard;
-      
-      gl_FragColor = vec4(vColor, texColor.a);
-    }
-  `
-);
-
-extend({ ParticleShaderMaterial });
-
-// --------------------------------------------------------
-// 3. COMPONENT
-// --------------------------------------------------------
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader';
+import { MeshSurfaceSampler } from 'three/examples/jsm/math/MeshSurfaceSampler';
 
 interface WishSphereProps {
-  id: string;
   text: string;
   color: string;
   position: [number, number, number];
 }
 
-export const WishSphere: React.FC<WishSphereProps> = ({ id, text, color, position }) => {
-  const materialRef = useRef<THREE.ShaderMaterial & { uTime: number; uFocus: number }>(null!);
-  const pointsRef = useRef<THREE.Points>(null!);
-  const { setFocusedWishId, focusedWishId } = useWishStore(state => ({
-    setFocusedWishId: state.setFocusedWishId,
-    focusedWishId: state.focusedWishId
-  }));
-  
-  const isFocused = focusedWishId === id;
+// ----------------------
+// Vertex Shader
+// ----------------------
+const vertexShader = `
+  uniform float uTime;
+  attribute float aRandom;
+  varying float vAlpha;
+  varying float vY; // Pass Y position for gradient
 
-  // Animation: Trajectory
+  void main() {
+    vec3 pos = position;
+    vY = pos.y; // Normalized Y height (approx -1 to 1)
+
+    // Organic Pulse: Expand and contract slightly based on time and randomness
+    float pulse = sin(uTime * 2.0 + aRandom * 10.0) * 0.05;
+    pos *= (1.0 + pulse);
+
+    vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+    gl_Position = projectionMatrix * mvPosition;
+
+    // Size Attenuation: Finer particles for high density
+    // Reduced max size slightly to accommodate higher count
+    float size = (20.0 * aRandom + 5.0); 
+    gl_PointSize = size * (1.0 / -mvPosition.z);
+    
+    // Twinkle Alpha
+    vAlpha = 0.8 + 0.2 * sin(uTime * 3.0 + aRandom * 10.0);
+  }
+`;
+
+// ----------------------
+// Fragment Shader
+// ----------------------
+const fragmentShader = `
+  uniform vec3 uColor;
+  varying float vAlpha;
+  varying float vY;
+
+  void main() {
+    // Soft circular particle
+    vec2 xy = gl_PointCoord.xy - vec2(0.5);
+    float dist = length(xy);
+    
+    if (dist > 0.5) discard;
+
+    // 1. Vertical Gradient Logic
+    // Map vY (approx -1 to 1) to a 0-1 range for mixing
+    float gradientMix = smoothstep(-0.8, 0.8, vY);
+    
+    vec3 colorBottom = vec3(1.0, 1.0, 1.0); // White bottom
+    vec3 colorTop = uColor; // Assigned Neon Color (e.g. Orange/Gold) on top
+    
+    vec3 finalColor = mix(colorBottom, colorTop, gradientMix);
+
+    // 2. Radial Glow (Bright center)
+    // Create a hot center that fades out
+    float glow = 1.0 - (dist * 2.0);
+    glow = pow(glow, 1.5);
+
+    // Output: Boost brightness (x2.0) for HDR bloom
+    gl_FragColor = vec4(finalColor * 2.0, vAlpha * glow);
+  }
+`;
+
+export const WishSphere: React.FC<WishSphereProps> = ({ text, color, position }) => {
+  const pointsRef = useRef<THREE.Points>(null);
+  const materialRef = useRef<THREE.ShaderMaterial>(null);
+  const [showTooltip, setShowTooltip] = useState(false);
+  const [hovered, setHovered] = useState(false);
+
+  // Load the external model
+  // FIXED URL: Removed 'refs/heads/'
+  const obj = useLoader(OBJLoader, 'https://raw.githubusercontent.com/icedtinat/lumina-assets/main/ball2.obj');
+  const count = 20000; // Increased to 20k for solid, high-density look
+
+  const { positions, randoms } = useMemo(() => {
+    let mesh: THREE.Mesh | null = null;
+    obj.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh && !mesh) {
+        mesh = child as THREE.Mesh;
+      }
+    });
+
+    if (!mesh) {
+      // Fallback if no mesh found
+      return { positions: new Float32Array(0), randoms: new Float32Array(0) };
+    }
+
+    const geometry = (mesh as THREE.Mesh).geometry.clone();
+    
+    // Normalize Geometry
+    geometry.center();
+    geometry.computeBoundingBox();
+    
+    // Normalize scale to approx radius 1
+    const size = new THREE.Vector3();
+    if (geometry.boundingBox) {
+      geometry.boundingBox.getSize(size);
+      const maxDim = Math.max(size.x, size.y, size.z);
+      if (maxDim > 0) {
+        const scaleFactor = 2.0 / maxDim; // Target diameter 2 (radius 1)
+        geometry.scale(scaleFactor, scaleFactor, scaleFactor);
+      }
+    }
+
+    // Sample Points
+    const sampler = new MeshSurfaceSampler(new THREE.Mesh(geometry)).build();
+    const positions = new Float32Array(count * 3);
+    const randoms = new Float32Array(count);
+    const tempPos = new THREE.Vector3();
+
+    for (let i = 0; i < count; i++) {
+      sampler.sample(tempPos);
+      positions[i * 3] = tempPos.x;
+      positions[i * 3 + 1] = tempPos.y;
+      positions[i * 3 + 2] = tempPos.z;
+      randoms[i] = Math.random();
+    }
+    
+    return { positions, randoms };
+  }, [obj, count]);
+
+  // Animation: Trajectory from camera to tree
   const { pos } = useSpring({
-    from: { pos: [0, 15, 30] },
+    from: { pos: [0, 15, 30] }, // Start higher and further back
     to: { pos: position },
-    config: { mass: 2, tension: 50, friction: 15 },
+    config: { mass: 2, tension: 50, friction: 15 }, // Slower, floatier arrival
     delay: 100,
   });
 
-  // Data Generation (Memoized)
-  const uniqueWords = useMemo(() => getUniqueWords(text), [text]);
-  const { texture, cols, rows } = useMemo(() => createWordTextureAtlas(uniqueWords), [uniqueWords]);
-  const atlasGrid = useMemo(() => new THREE.Vector2(cols, rows), [cols, rows]);
-
-  const { positions, colors, randoms, scales, wordIndexes } = useMemo(() => {
-    const count = 2000; 
-    const radius = 0.6; 
-
-    const positions = [];
-    const colors = [];
-    const randoms = [];
-    const scales = [];
-    const wordIndexes = [];
-    
-    // Use Hardcoded Yellow -> White colors for particles regardless of wish color prop
-    const cTop = new THREE.Color('#FFD700'); 
-    const cBottom = new THREE.Color('#FFFFFF'); 
-    const tempColor = new THREE.Color();
-
-    for (let i = 0; i < count; i++) {
-      const u = Math.random();
-      const v = Math.random();
-      const theta = 2 * Math.PI * u;
-      const phi = Math.acos(2 * v - 1);
-      
-      const r = radius * (0.8 + Math.random() * 0.4); 
-
-      let x = r * Math.sin(phi) * Math.cos(theta);
-      let y = r * Math.cos(phi);
-      let z = r * Math.sin(phi) * Math.sin(theta);
-      
-      positions.push(x, y, z);
-      
-      // Color Gradient based on Y
-      const normalizedY = y / radius; 
-      const t = (normalizedY + 1) / 2;
-      tempColor.copy(cBottom).lerp(cTop, t);
-      colors.push(tempColor.r, tempColor.g, tempColor.b);
-
-      randoms.push(Math.random(), Math.random(), Math.random());
-      
-      scales.push(0.5 + Math.random() * 1.0);
-      
-      const wIdx = Math.floor(Math.random() * uniqueWords.length);
-      wordIndexes.push(wIdx);
-    }
-
-    return {
-      positions: new Float32Array(positions),
-      colors: new Float32Array(colors),
-      randoms: new Float32Array(randoms),
-      scales: new Float32Array(scales),
-      wordIndexes: new Float32Array(wordIndexes)
-    };
-  }, [text, uniqueWords]);
-
-  useFrame((state, delta) => {
-    if (materialRef.current) {
-      materialRef.current.uTime = state.clock.elapsedTime;
-      
-      // Animate uFocus
-      // 1.0 if focused, 0.0 if not
-      const targetFocus = isFocused ? 1.0 : 0.0;
-      const currentFocus = materialRef.current.uFocus;
-      // Smooth interpolation
-      materialRef.current.uFocus += (targetFocus - currentFocus) * delta * 2.0;
-    }
-    if (pointsRef.current) {
-      pointsRef.current.rotation.y += delta * 0.2; 
-      
+  // Idle Animation & Uniform Updates
+  useFrame((state) => {
+    if (pointsRef.current && materialRef.current) {
+      // Bobbing logic
       const currentPos = pos.get() as [number, number, number];
-      pointsRef.current.position.set(currentPos[0], currentPos[1], currentPos[2]);
+      const bobOffset = Math.sin(state.clock.elapsedTime * 1.5 + position[0]) * 0.15;
+      
+      pointsRef.current.position.set(
+        currentPos[0], 
+        currentPos[1] + bobOffset, 
+        currentPos[2]
+      );
+
+      // Update Shader Time
+      materialRef.current.uniforms.uTime.value = state.clock.elapsedTime;
+      
+      // Pulse size on hover
+      const targetScale = hovered ? 0.45 : 0.35; // Slightly larger overall scale
+      pointsRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), 0.1);
     }
   });
 
+  const uniforms = useMemo(() => ({
+    uTime: { value: 0 },
+    uColor: { value: new THREE.Color(color) }
+  }), [color]);
+
   return (
-    <animated.points 
-      ref={pointsRef} 
-      onDoubleClick={(e) => {
+    <animated.points
+      ref={pointsRef}
+      onClick={(e) => {
         e.stopPropagation();
-        setFocusedWishId(id);
+        setShowTooltip(!showTooltip);
       }}
-      onPointerOver={() => document.body.style.cursor = 'pointer'}
-      onPointerOut={() => document.body.style.cursor = 'auto'}
+      onPointerOver={() => {
+        document.body.style.cursor = 'pointer';
+        setHovered(true);
+      }}
+      onPointerOut={() => {
+        document.body.style.cursor = 'auto';
+        setHovered(false);
+      }}
     >
       <bufferGeometry>
-        <bufferAttribute attach="attributes-position" count={positions.length / 3} array={positions} itemSize={3} />
-        <bufferAttribute attach="attributes-aColor" count={colors.length / 3} array={colors} itemSize={3} />
-        <bufferAttribute attach="attributes-aRandom" count={randoms.length / 3} array={randoms} itemSize={3} />
-        <bufferAttribute attach="attributes-aScale" count={scales.length} array={scales} itemSize={1} />
-        <bufferAttribute attach="attributes-aWordIndex" count={wordIndexes.length} array={wordIndexes} itemSize={1} />
+        <bufferAttribute
+          attach="attributes-position"
+          count={count}
+          array={positions}
+          itemSize={3}
+        />
+        <bufferAttribute
+          attach="attributes-aRandom"
+          count={count}
+          array={randoms}
+          itemSize={1}
+        />
       </bufferGeometry>
-      {/* @ts-ignore */}
-      <particleShaderMaterial
+      <shaderMaterial
         ref={materialRef}
-        uTexture={texture}
-        uAtlasGrid={atlasGrid}
-        uColorTop={new THREE.Color('#FFD700')}
-        uColorBottom={new THREE.Color('#FFFFFF')}
-        transparent={true}
+        vertexShader={vertexShader}
+        fragmentShader={fragmentShader}
+        uniforms={uniforms}
+        transparent
         depthWrite={false}
         blending={THREE.AdditiveBlending}
       />
+      
+      {/* Tooltip */}
+      {showTooltip && (
+        <Html distanceFactor={15}>
+          <div className="bg-black/90 backdrop-blur-xl border border-white/30 p-4 rounded-xl text-white w-52 text-center shadow-[0_0_30px_rgba(255,255,255,0.1)] pointer-events-none transform -translate-y-full -mt-6">
+            <p className="font-light text-sm italic tracking-wide text-cyan-50">"{text}"</p>
+            <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-full w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[6px] border-t-black/90" />
+          </div>
+        </Html>
+      )}
     </animated.points>
   );
 };

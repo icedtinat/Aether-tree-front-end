@@ -83,7 +83,6 @@ const vertexShader = `
 // Fragment Shader
 // ----------------------
 const fragmentShader = `
-  uniform float uGlobalAlpha; // Transparency Control
   varying float vAlpha;
   varying vec3 vColor;
 
@@ -97,22 +96,16 @@ const fragmentShader = `
     float glow = 1.0 - (r * 2.0);
     glow = pow(glow, 1.5);
 
-    // Combine alpha
-    float alpha = vAlpha * uGlobalAlpha;
-
-    gl_FragColor = vec4(vColor, alpha * glow);
+    gl_FragColor = vec4(vColor, vAlpha * glow);
   }
 `;
 
-interface ParticleTreeProps {
-  isFocused: boolean;
-}
-
-export const ParticleTree: React.FC<ParticleTreeProps> = ({ isFocused }) => {
+export const ParticleTree: React.FC = () => {
   const meshRef = useRef<THREE.Points>(null);
   const materialRef = useRef<THREE.ShaderMaterial>(null);
   
   // Use remote path pointing to raw github content
+  // FIXED URL: Removed 'refs/heads/'
   const obj = useLoader(OBJLoader, 'https://raw.githubusercontent.com/icedtinat/lumina-assets/main/tree.obj');
 
   // Configuration
@@ -205,12 +198,6 @@ export const ParticleTree: React.FC<ParticleTreeProps> = ({ isFocused }) => {
       } else {
         materialRef.current.uniforms.uGrowth.value = 1.0;
       }
-
-      // Update Opacity (uGlobalAlpha) based on focus state
-      // 1.0 = Opaque, 0.3 = Transparent
-      const targetAlpha = isFocused ? 0.3 : 1.0;
-      const currentAlpha = materialRef.current.uniforms.uGlobalAlpha.value;
-      materialRef.current.uniforms.uGlobalAlpha.value += (targetAlpha - currentAlpha) * delta * 2.0;
     }
   });
 
@@ -218,8 +205,7 @@ export const ParticleTree: React.FC<ParticleTreeProps> = ({ isFocused }) => {
     () => ({
       uTime: { value: 0 },
       uGrowth: { value: 0 },
-      uTreeHeight: { value: treeHeight },
-      uGlobalAlpha: { value: 1.0 } // Init alpha
+      uTreeHeight: { value: treeHeight }
     }),
     [treeHeight]
   );

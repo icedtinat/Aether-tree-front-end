@@ -13,11 +13,9 @@ interface WishState {
   wishText: string;
   selectedVessel: string;
   wishes: Wish[];
-  focusedWishId: string | null; // New: Track which wish is open in Split View
   setIsWishing: (isWishing: boolean) => void;
   setWishText: (text: string) => void;
   setSelectedVessel: (vessel: string) => void;
-  setFocusedWishId: (id: string | null) => void; // New Action
   addWish: (text: string, vessel: string) => void;
 }
 
@@ -34,26 +32,30 @@ const NEON_COLORS = [
 export const useWishStore = create<WishState>((set) => ({
   isWishing: false,
   wishText: '',
-  selectedVessel: 'Sphere', 
+  selectedVessel: 'Sphere', // Default vessel
   wishes: [],
-  focusedWishId: null,
   setIsWishing: (isWishing) => set({ isWishing }),
   setWishText: (wishText) => set({ wishText }),
   setSelectedVessel: (selectedVessel) => set({ selectedVessel }),
-  setFocusedWishId: (focusedWishId) => set({ focusedWishId }),
   addWish: (text, vessel) => {
     set((state) => {
-      // Place in middle section of tree (3.0 to 8.5)
+      // Logic to place the ornament on the tree surface
+      // Tree is approx 10 units high. 
+      // Adjusted Y range to focus on the MIDDLE section (3.0 to 8.5) instead of bottom
+      
       const y = 3.0 + Math.random() * 5.5; 
       
-      // Radius taper logic
+      // Radius taper: 0 at top (approx 10), 3.5 at bottom (0)
       const maxRadiusAtY = 3.5 * (1 - y / 10.5); 
+      
+      // Place near surface (0.85 to 1.05 of radius)
       const radius = maxRadiusAtY * (0.85 + Math.random() * 0.2); 
       const theta = Math.random() * Math.PI * 2;
       
       const x = radius * Math.cos(theta);
       const z = radius * Math.sin(theta);
       
+      // Select random color
       const color = NEON_COLORS[Math.floor(Math.random() * NEON_COLORS.length)];
 
       const newWish: Wish = {
@@ -66,8 +68,8 @@ export const useWishStore = create<WishState>((set) => ({
 
       return {
         wishes: [...state.wishes, newWish],
-        wishText: '', 
-        isWishing: false 
+        wishText: '', // Reset text
+        isWishing: false // Close modal
       };
     });
   }

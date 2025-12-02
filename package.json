@@ -1,5 +1,5 @@
 {
-  "name": "aether-tree-front-end",
+  "name": "aether-tree",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -25,11 +25,7 @@
     "@react-spring/core": "9.7.3",
     "@react-spring/shared": "9.7.3",
     "@react-spring/types": "9.7.3",
-    "@react-spring/animated": "9.7.3",
-    "path": "^0.12.7",
-    "vite": "^7.2.6",
-    "@vitejs/plugin-react": "^5.1.1",
-    "url": "^0.11.4"
+    "@react-spring/animated": "9.7.3"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
